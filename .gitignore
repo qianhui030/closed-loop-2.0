@@ -1,0 +1,31 @@
+# Daily runs contain tracking numbers and customer files. Keep them local.
+Archive/
+Final_Output/
+Logs/
+MAWB_Log/
+No_Ascan_Pool/
+Receiving_Log/
+Status_Check/
+Step1_Output/
+Working/
+Temu analysis/
+
+# Source files dropped into the merger, and its outputs.
+Data Combination/*.xlsx
+Data Combination/*.xls
+Data Combination/*.csv
+Data Combination/output/
+Data Combination/_backup_*/
+Data Combination/__pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Office lock files and local scratch
+~$*
+*.tmp
+.DS_Store
+Thumbs.db

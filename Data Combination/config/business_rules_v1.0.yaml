@@ -1,0 +1,131 @@
+version: "1.1.3"
+name: "Daily A-Scan unified master"
+
+dedupe:
+  primary_key: TNO
+  one_row_per_tno: true
+  method: field_level_outer_merge
+  forbid_append_then_drop_duplicates: true
+
+source_priority:
+  - Platform
+  - System
+  - AGS
+  keep_all_in:
+    - Source
+    - File名称
+
+system_hub:
+  prefer: first_ascan_hub
+  fallback: origin_poe
+  drop_if_both_empty: true
+  beats_platform_and_ags: first_ascan_hub
+  note: "first_ascan_poe is A-scan time, not a hub. first_ascan_hub is not overwritten by Platform/AGS Origin Hub."
+  fbt_dfw_to_iah: true
+  fbt_dfw_to_iah_note: "DFW has no TT FBT. After Hub is chosen, TT FBT rows with Hub=DFW are rewritten to IAH."
+
+customer_standardization:
+  display_field: CUSTOMER
+  raw_field: customer_raw
+  raw_join: semicolon_unique
+  rules:
+    - match: "tiktok"
+      match_type: contains_case_insensitive
+      apply_when: AGS
+      to: "TT GS"
+    - match: "HANGZHOU CAINIAO SUPPLY CHAIN MANAGEMENT CO.,LTD."
+      match_type: exact_normalized
+      to: "AliExpress"
+    - platform_sheet: AliExpress
+      to: "AliExpress"
+    - platform_sheet: FBT
+      to: "TT FBT"
+    - platform_sheet: Winit
+      to: "Winit"
+    - platform_sheet: TT-GS
+      to: "TT GS"
+
+start_time_type_display:
+  Handover: "Handover Time"
+  Pickup: "Pickup Time"
+  FBT_Manifest: "Manifest Time"
+  Winit_date_manifested: "Manifest Time"
+
+sla:
+  fbt_hours: 12
+  fbt_12h_hubs:
+    - MIA
+  fbt_other_hours: 24
+  procarrier_vinted_hours: 48
+  default_hours: 24
+  due_from: start_time
+  status_values:
+    - On Time
+    - Late
+    - No A-Scan
+  no_pending: true
+  rules:
+    On Time: "hour SLA: first_ascan_time <= due; Winit calendar: first_ascan_time < due_date+1day 00:00:00"
+    Late: "has A-Scan and not On Time"
+    No A-Scan: "first_ascan_time is null"
+  customer_48h:
+    - ProCarrier
+    - Vinted US Domestic
+  customer_48h_requires:
+    has_system: true
+    has_ags: false
+  winit:
+    mode: calendar
+    regular: D1
+    lax_pickup: D0
+    identify_lax_pickup: "Hub contains 自提"
+    do_not_treat_all_lax_as_pickup: true
+    skip_weekend: false
+    friday_to_monday: false
+    sunday_to_tuesday: false
+    display_due: "23:59:59"
+    compare: "ascan < due_date + 1 day 00:00:00"
+    start_from: start_time
+    customer_target: 0.95
+    internal_target: 0.995
+    do_not_judge_by_sla_hours: true
+
+master_columns:
+  - Source
+  - File名称
+  - primary_source
+  - 业务名称
+  - TNO
+  - MAWB
+  - CUSTOMER
+  - customer_raw
+  - Hub
+  - start_time
+  - start_time_type
+  - first_ascan_time
+  - Ascan Due Date
+  - cohort_date
+  - time_diff_hours
+  - sla_hours
+  - sla_type
+  - status
+  - 跨Hub转运
+
+inter_hub_transfer:
+  source: AGS_only
+  write_back_key: TNO
+  forbid_using_master_hub: true
+  mawb_hub_field: MAWB Details.Hub
+  destination_hub_field: Tracking Details.destination_hub
+  origin_hub_audit_only: true
+  allowed_values:
+    - LAX-DFW
+    - EWR-ORD
+  rules:
+    LAX-DFW:
+      ags_mawb_hub: LAX
+      destination_hubs_subset_of: [DFW, IAH]
+    EWR-ORD:
+      ags_mawb_hub: EWR
+      destination_hubs_must_include: [ATL, EWR, MIA, ORD]
+  exclude_from_official_ascan_rate: true

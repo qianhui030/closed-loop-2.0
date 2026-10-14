@@ -1,0 +1,129 @@
+# Status Check 解析与状态判定配置。
+# 列别名来自 package_status_check_template / 真实导出（工作表 Orders）。
+# 只按归一化后完全相等匹配列名，不做模糊包含。
+
+header_scan_rows: 6
+
+columns:
+  tno: ["Tracking Number", "TNO", "tracking_number", "追踪号", "跟踪号", "运单号"]
+  ascan_time:
+    - "First Scan Arrival Scan"
+    - "First Ascan Time"
+    - "First A-scan Time"
+    - "Ascan Time"
+    - "first_ascan_time"
+    - "First Scan Date"
+    - "ASCAN时间"
+  last_event_code:
+    - "Last Physical Event Code"
+    - "last_physical_event_code"
+    - "Event Code"
+    - "最后物理事件代码"
+  last_event_desc:
+    - "Last Physical Event"
+    - "Last Physical Event Description"
+    - "last_physical_event_description"
+    - "Event Description"
+    - "最后物理事件描述"
+  last_event_time:
+    - "Last Physical Event Date (Local)"
+    - "Last Physical Event Date"
+    - "last_physical_event_time"
+    - "Event Time"
+    - "最后物理事件时间"
+  # AC
+  last_status_event_desc:
+    - "Last Status Event Description"
+    - "last_status_event_description"
+  # AE — 导出列名带引号
+  last_attempt_event_desc:
+    - 'Last "Attempt" Event Description'
+    - "Last Attempt Event Description"
+    - "last_attempt_event_description"
+  # BQ
+  last_public_status_event_desc:
+    - "Last Public Status Event Description"
+    - "last_public_status_event_description"
+  # 历史上出现过 57407 时导出此列；非空即算有过 57407
+  arrived_sc_date_57407:
+    - "Arrived Shipping Center Date57407"
+    - "Arrived Shipping Center Date 57407"
+    - "arrived_shipping_center_date_57407"
+
+datetime_formats:
+  - "%Y-%m-%d %H:%M:%S"
+  - "%Y-%m-%d %H:%M"
+  - "%Y/%m/%d %H:%M:%S"
+  - "%m/%d/%Y %H:%M:%S"
+  - "%m/%d/%Y %H:%M"
+
+# 原 A-scan 与查询 A-scan 都有效但不相同时怎么办。
+# keep_original      = 保留原值，冲突写核对清单（默认，不擅自取最近时间）
+# prefer_status_check= 采用查询值，仍写核对清单
+ascan_conflict_policy: keep_original
+
+no_ascan_subclass:
+  # 更新后 First Scan Arrival Scan 仍空时：
+  #   Last Physical Event Code 为空     -> No Ascan No Track
+  #   Last Physical Event Code = 51005 -> 51005
+  #   其他非空事件码                    -> Missing Ascan
+  # 没查到这个 TNO                     -> No A-Scan (未查询)
+  no_track: "No Ascan No Track"
+  missing_ascan: "Missing Ascan"
+  not_queried: "No A-Scan (未查询)"
+  status_51005: "51005"
+  event_codes_51005: ["51005"]
+
+late_split:
+  pickup: "Late(PickUp)"
+  handover: "Late(Handover)"
+  manifest: "Late(Manifest)"
+  others: "Late(Others)"
+
+wrong_address:
+  label: "Wrong Address"
+  # 可覆盖 Late 和各类无 A-scan；On Time 不自动覆盖
+  can_override: ["Late", "Late(PickUp)", "Late(Handover)", "Late(Manifest)", "Late(Others)", "Missing Ascan", "51005", "No Ascan No Track", "No A-Scan (未查询)", "No A-Scan"]
+  never_override: ["On Time"]
+  # 任一规则命中即 Wrong Address。描述按包含匹配（去空白、忽略大小写）。
+  rules:
+    - source: "AC | Last Status Event Description"
+      field: last_status_event_desc
+      match_type: contains_any
+      values:
+        - "Delivery Address is Corrected"
+        - "Address is unknown/Wrong"
+        - "Undelivered - Invalid Address"
+        - "Delivery instruction added or address updated"
+        - "Attempted Delivery: Invalid Address"
+    - source: 'AE | Last "Attempt" Event Description'
+      field: last_attempt_event_desc
+      match_type: contains_any
+      values:
+        - "Attempted Delivery: Invalid Address"
+    - source: "AI | Last Physical Event Code"
+      field: last_event_code
+      match_type: event_code
+      values: ["57407"]
+    - source: "Arrived Shipping Center Date57407"
+      field: arrived_sc_date_57407
+      match_type: not_empty
+      values: []
+    - source: "AJ | Last Physical Event"
+      field: last_event_desc
+      match_type: contains_any
+      values:
+        - "Attempted Delivery: Invalid Address"
+        - "Parcel received but with incorrect address. Note: Please contact with customer service directly and schedule delivery."
+    - source: "BQ | Last Public Status Event Description"
+      field: last_public_status_event_desc
+      match_type: contains_any
+      values:
+        - "Delivery Address is Corrected"
+        - "Address is unknown/Wrong"
+        - "Undelivered - Invalid Address"
+        - "Attempted Delivery: Invalid Address"
+        - "Parcel received but with incorrect address. Note: Please contact with customer service directly and schedule delivery."
+
+# 只列已确认条件。其他事件码不做任何推断。
+other_confirmed_rules: []

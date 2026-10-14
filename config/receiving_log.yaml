@@ -1,0 +1,56 @@
+# Receiving Log 标准化配置。
+# 表头别名按“归一化后完全相等”匹配（去空格、忽略大小写、去全角），不做模糊包含。
+
+# 有些导出文件第一行是中文标题、第二行才是英文真表头，逐行试探取命中别名最多的一行。
+header_scan_rows: 6
+
+columns:
+  mawb: ["MAWB", "MAWB#", "Master AWB", "主运单号", "提单号"]
+  hub: ["Hub", "HUB", "Origin Hub", "Receiving Hub", "分拨中心", "站点"]
+  receiving_datetime: ["Receiving Time", "ATA DateTime", "实际收货时间", "到仓时间"]
+  receiving_date: ["Receiving Date", "ATA Date", "Date", "收货日期", "日期"]
+  receiving_time_only:
+    - "Actual Time of Arrival (ATA)(*)"
+    - "Actual Time of Arrival (ATA)"
+    - "ATA"
+    - "实际到达时间"
+  cartons: ["Carton Quantity Unloaded", "Cartons", "Carton Qty", "箱数"]
+  skids: ["Pallet Quantity Unloaded", "Skids", "Pallets", "Pallet Qty", "板数"]
+  broker: ["Customs Broker Name", "报关行名称"]
+  first_mile_type: ["First Mile Type(*)", "First Mile Type", "头程类型"]
+  receiver: ["Receiver(*)", "Receiver", "收货人"]
+
+# 一个单元格里可能塞了多个 MAWB（换行/分号/逗号分隔），拆成多条收货记录。
+mawb_split_pattern: "[\r\n;,、]+"
+
+# 解析顺序：先整段日期时间，再“日期列 + 时间列”，最后“外部日期 + 时间列”。
+datetime_formats:
+  - "%Y-%m-%d %H:%M:%S"
+  - "%Y-%m-%d %H:%M"
+  - "%Y/%m/%d %H:%M"
+  - "%m/%d/%Y %H:%M"
+  - "%m/%d/%Y %H:%M:%S"
+date_formats:
+  - "%Y-%m-%d"
+  - "%Y/%m/%d"
+  - "%m/%d/%Y"
+time_formats:
+  - "%H;%M"      # DFW Receiving log 实际用分号，例：21;10
+  - "%H:%M"
+  - "%H:%M:%S"
+  - "%H%M"
+
+date_policy:
+  # 文件内没有任何日期列时，必须由运行参数 --receiving-date 显式给出。
+  # 绝不使用文件修改时间，也不默认从文件名推断。
+  allow_filename_date: false
+  filename_date_patterns: []
+
+# 表内没有 Hub 列时，按下面的明确配置取 Hub；命中后写 hub_source=config:file_hub_map 并打印。
+# 没命中就报待核对，不按文件名猜。
+file_hub_map:
+  - pattern: "DFW*"
+    hub: "DFW"
+    note: "DFW Receiving log 系列。由 Accelerated 确认后固定。"
+
+encodings: ["utf-8-sig", "utf-8", "gbk", "cp1252", "latin1"]

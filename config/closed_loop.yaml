@@ -1,0 +1,92 @@
+# 闭环主配置。所有路径相对项目根目录。
+version: "2.0.0"
+
+unified_master:
+  # Data Combination 仍是三源合并的唯一实现，本项目只消费它的宽表输出。
+  merge_dir: "Data Combination"
+  merge_entry: "build_unified_master.py"
+  wide_csv: "output/unified_master.csv"
+  # 复用已有宽表时，超过这个分钟数就必须显式确认，避免静默读上次遗留输出。
+  reuse_max_age_minutes: 180
+
+time:
+  # 各源时间一律按“当地时间字面值”比较，不做时区换算。
+  # 若出现带时区标记的时间，标记异常而不是擅自转换。
+  policy: no_conversion
+  output_format: "%Y-%m-%d %H:%M:%S"
+
+source_labels:
+  pool: "No Ascan Pool"
+  route_three_sources: "Three Sources"
+  route_pool: "No Ascan Pool"
+  route_both: "Three Sources + No Ascan Pool"
+  entry_three: "当天三源"
+  entry_pool: "Pool捞出"
+  entry_both: "当天三源+Pool"
+
+query_reason:
+  current_kpi: "本次KPI"
+  history_tracking: "历史追踪"
+
+# 收货 Hub 与包裹 Hub 不一致时，只按下面这些“已确认映射”接受，其余一律报待核对。
+# 取值直接来自 Data Combination 已确认的跨 Hub 转运规则。
+receiving_hub_expectation:
+  LAX-DFW: [DFW, IAH]
+  EWR-ORD: [ATL, EWR, MIA, ORD]
+
+# Pool 捞出后改写 跨Hub转运，便于 Pivot 与当天三源的 LAX-DFW 区分。
+# 收货 Hub 映射仍按去掉 (Found) 后的原标签查找。
+cross_hub_found:
+  LAX-DFW: "LAX-DFW(Found)"
+  EWR-ORD: "EWR-ORD(Found)"
+
+# 非跨 Hub 场景的等价 Hub。默认空：没有配置就报待核对，不用最终 Hub 直接覆盖。
+hub_equivalence: {}
+
+pool:
+  # Closed_History 接近 Excel 上限时按日期切分归档，不截断。
+  closed_history_max_rows: 900000
+  backup_keep: 30
+  # 日常读写用 parquet。true 时额外写 No_Ascan_Pool.xlsx（30万行大约十几分钟）。
+  write_excel: false
+
+report:
+  status_order:
+    - On Time
+    - "51005"
+    - Wrong Address
+    - No Ascan No Track
+    - Late(PickUp)
+    - Missing Ascan
+    - Late(Handover)
+    - Late(Manifest)
+  hub_order:
+    - MIA
+    - DFW
+    - IAH
+    - EWR
+    - ATL
+    - ORD
+    - LAX
+    - LAX自提
+    - JFK
+    - BWI
+    - CVG
+    - SFO
+  font_name: "微软雅黑"
+  percent_format: "0.00%"
+  count_format: "#,##0"
+  # Customer Pivot：行字段 CUSTOMER；跨Hub转运、进表来源默认 All；kpi_eligible 默认 True。
+  # Hub Pivot / On Time Rate 各四张表：跨Hub转运默认 非跨Hub。
+  # Handover 表 start_time_type=Handover Time；Pick Up 表同时勾选 Pickup Time + Manifest Time。
+  cross_hub_filter_default: All
+  kpi_eligible_filter_default: "True"
+  hub_pivot_cross_hub_default: "非跨Hub"
+
+# Winit 客户目标 95%；内部目标 99.5%。只作标识，不参与 onTime_count。
+sla_targets:
+  Winit:
+    customer: 0.95
+    internal: 0.995
+    label_customer: "客户目标 95%"
+    label_internal: "内部目标 99.5%"

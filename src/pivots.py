@@ -552,6 +552,10 @@ def build_workbook(path: Path, sheets: dict[str, pd.DataFrame],
             logger.warning("%s 无数据行，跳过 Pivot 创建", source_sheet)
             specs_to_build = []
 
+        cache = (
+            workbook.PivotCaches().Create(SourceType=XL_DATABASE, SourceData=src_range)
+            if specs_to_build else None
+        )
         for sheet_spec in specs_to_build:
             sheet = _ensure_sheet(workbook, sheet_spec["sheet"])
             specs = [dict(spec) for spec in sheet_spec["pivots"]]
@@ -570,7 +574,6 @@ def build_workbook(path: Path, sheets: dict[str, pd.DataFrame],
                                     later["title_row"] = int(later["title_row"]) + shift
                         dest_row = int(spec["dest_row"])
                 prev_dest_row = dest_row
-                cache = workbook.PivotCaches().Create(SourceType=XL_DATABASE, SourceData=src_range)
                 _add_pivot(workbook, sheet, cache, spec, report, font, logger)
             sheet.Columns("A:AZ").AutoFit()
 

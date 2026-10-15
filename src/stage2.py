@@ -13,7 +13,6 @@ import pandas as pd
 from openpyxl import load_workbook
 
 import kpi_rules
-import mawb_log
 import pivots
 import pool as pool_mod
 from common import (
@@ -125,9 +124,16 @@ def read_status_check(cfg: dict, logger) -> tuple[pd.DataFrame, list[Path]]:
     frames = []
     for path in files:
         if path.suffix.lower() in {".xlsx", ".xlsm"}:
-            wb = load_workbook(path, read_only=True, data_only=True)
-            rows = [list(r) for r in wb[wb.sheetnames[0]].iter_rows(values_only=True)]
-            wb.close()
+            try:
+                from python_calamine import CalamineWorkbook
+                cwb = CalamineWorkbook.from_path(str(path))
+                rows = [
+                    list(r) for r in cwb.get_sheet_by_index(0).to_python(skip_empty_area=False)
+                ]
+            except Exception:
+                wb = load_workbook(path, read_only=True, data_only=True)
+                rows = [list(r) for r in wb[wb.sheetnames[0]].iter_rows(values_only=True)]
+                wb.close()
         else:
             rows = None
             for enc in ("utf-8-sig", "utf-8", "gbk", "cp1252", "latin1"):
@@ -388,9 +394,7 @@ def publish_kpi_frames(updated: pd.DataFrame, sc_cfg: dict, logger):
 def report_sheets(report: pd.DataFrame, exceptions: pd.DataFrame, outside: pd.DataFrame,
                   eligible: pd.DataFrame, kpi_date: str, cfg: dict,
                   removed_summary: pd.DataFrame | None = None,
-                  removed_detail: pd.DataFrame | None = None) -> tuple[dict, pd.DataFrame]:
-    hub_order = cfg.get("report", {}).get("hub_order", [])
-    summary = mawb_log.summarize_mawbs(eligible, kpi_date, hub_order)
+                  removed_detail: pd.DataFrame | None = None) -> dict:
     sheets = {
         "Updated Unified Master": report,
         "删除说明": removed_summary if removed_summary is not None else kpi_rules.removal_summary(
@@ -399,11 +403,10 @@ def report_sheets(report: pd.DataFrame, exceptions: pd.DataFrame, outside: pd.Da
         "本次删除": removed_detail if removed_detail is not None else kpi_rules.removal_detail(
             pd.DataFrame()
         ),
-        "MAWB 汇总": mawb_log.summary_sheet(summary),
         "异常核对": exceptions,
         "非本批次查询结果": outside,
     }
-    return sheets, summary
+    return sheets
 
 
 def build_pool_rows(keep: pd.DataFrame, kpi_date: str, run_id: str, now: str) -> pd.DataFrame:
@@ -477,12 +480,13 @@ def rebuild_completed_report(args, cfg: dict, sc_cfg: dict, logger, run_id2: str
 
     out_dir = DIRS["final_output"] / kpi_date / args.run_id
     report_path = out_dir / "Ascan_KPI.xlsx"
-    sheets, mawb_summary = report_sheets(report, exceptions, outside, eligible, kpi_date, cfg)
+    sheets = report_sheets(report, exceptions, outside, eligible, kpi_date, cfg)
     report_path = pivots.build_workbook(report_path, sheets, cfg, logger)
-    mia_path = out_dir / pivots.MIA_REPORT_NAME
-    mia_path = pivots.build_mia_hub_workbook(mia_path, report, cfg, logger)
-    logger.info("MIA Hub 报表：%s", mia_path.relative_to(ROOT))
-    mawb_log.append_daily(mawb_summary, logger)
+    mia_path = None
+    if bool(cfg.get("report", {}).get("write_mia_report", False)):
+        mia_path = out_dir / pivots.MIA_REPORT_NAME
+        mia_path = pivots.build_mia_hub_workbook(mia_path, report, cfg, logger)
+        logger.info("MIA Hub 报表：%s", mia_path.relative_to(ROOT))
     report.to_parquet(step2, index=False)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -490,7 +494,7 @@ def rebuild_completed_report(args, cfg: dict, sc_cfg: dict, logger, run_id2: str
         "report_rebuilt_at": now,
         "report_rebuild_run_id": run_id2,
         "report": str(report_path.relative_to(ROOT)),
-        "mia_report": str(mia_path.relative_to(ROOT)),
+        "mia_report": str(mia_path.relative_to(ROOT)) if mia_path else None,
         "master_tno_total": int(report["TNO"].nunique()),
         "kpi_denominator": int(len(eligible)),
         "kpi_counts": {str(k): int(v) for k, v in counts.items()},
@@ -646,7 +650,7 @@ def main(argv=None) -> int:
 
         out_dir = DIRS["final_output"] / kpi_date / run_id
         report_path = out_dir / "Ascan_KPI.xlsx"
-        sheets, mawb_summary = report_sheets(
+        sheets = report_sheets(
             updated, exceptions, outside, eligible, kpi_date, cfg,
             removed_summary, removed_detail,
         )
@@ -659,13 +663,13 @@ def main(argv=None) -> int:
         else:
             report_path = pivots.build_workbook(report_path, sheets, cfg, logger)
             logger.info("报表已生成：%s", report_path.relative_to(ROOT))
-        mia_path = out_dir / pivots.MIA_REPORT_NAME
-        mia_path = pivots.build_mia_hub_workbook(mia_path, updated, cfg, logger)
-        logger.info("MIA Hub 报表：%s", mia_path.relative_to(ROOT))
-        if date_ok and not args.allow_unconfirmed_receiving_date:
-            mawb_log.append_daily(mawb_summary, logger)
-        else:
-            logger.warning("非正式 KPI，未写入 MAWB 累计表。")
+        mia_path = None
+        if bool(cfg.get("report", {}).get("write_mia_report", False)):
+            mia_path = out_dir / pivots.MIA_REPORT_NAME
+            mia_path = pivots.build_mia_hub_workbook(mia_path, updated, cfg, logger)
+            logger.info("MIA Hub 报表：%s", mia_path.relative_to(ROOT))
+        if not date_ok or args.allow_unconfirmed_receiving_date:
+            logger.warning("非正式 KPI（收货日期未确认）。")
 
         # ---------------------------------------------------------- pool upkeep
         active, closed, _ = pool_mod.load_pool(logger)
@@ -711,7 +715,7 @@ def main(argv=None) -> int:
             "step2_run_id": run_id2,
             "completed_at": now,
             "report": str(report_path.relative_to(ROOT)),
-            "mia_report": str(mia_path.relative_to(ROOT)),
+            "mia_report": str(mia_path.relative_to(ROOT)) if mia_path else None,
             "official_kpi": bool(date_ok) and not args.allow_unconfirmed_receiving_date,
             "master_tno_total": int(updated["TNO"].nunique()),
             "kpi_denominator": int(len(eligible)),

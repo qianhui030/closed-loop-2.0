@@ -50,7 +50,14 @@ pool:
   # 日常读写用 parquet。true 时额外写 No_Ascan_Pool.xlsx（30万行大约十几分钟）。
   write_excel: false
 
+step1:
+  # 日常只需要 Status_Check_List.xlsx。50万行的 Unified_Master_Step1.xlsx 默认不写。
+  write_excel: false
+  write_working_pool_csv: false
+
 report:
+  # 是否单独生成 Ascan_KPI_MIA.xlsx。默认不生成。
+  write_mia_report: false
   status_order:
     - On Time
     - "51005"

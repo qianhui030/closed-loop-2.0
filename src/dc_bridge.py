@@ -42,6 +42,11 @@ def wide_csv_path(cfg: dict) -> Path:
     return DIRS["data_combination"] / section["wide_csv"]
 
 
+def wide_parquet_path(cfg: dict) -> Path:
+    csv_path = wide_csv_path(cfg)
+    return csv_path.with_suffix(".parquet")
+
+
 def run_merge(cfg: dict, logger) -> str:
     """Run build_unified_master.py in its own folder and surface its sheet report."""
     folder = DIRS["data_combination"]
@@ -91,12 +96,18 @@ def check_platform_sheet_report(merge_log: str, logger) -> list[str]:
 
 def load_unified_master(cfg: dict, mode: str, allow_stale: bool, logger) -> tuple[pd.DataFrame, dict]:
     """mode='run' 重跑合并；mode='reuse' 使用本次已生成的宽表。不静默读旧结果。"""
-    path = wide_csv_path(cfg)
+    csv_path = wide_csv_path(cfg)
+    pq_path = wide_parquet_path(cfg)
     merge_log = ""
     if mode == "run":
         merge_log = run_merge(cfg, logger)
         check_platform_sheet_report(merge_log, logger)
-    elif mode == "reuse":
+
+    # Prefer the freshest of parquet and csv so both fast runs and legacy/test CSVs work.
+    candidates = [p for p in (pq_path, csv_path) if p.exists()]
+    path = max(candidates, key=lambda p: p.stat().st_mtime) if candidates else pq_path
+
+    if mode == "reuse":
         if not path.exists():
             raise StopWithMessage(
                 f"找不到宽表 {path}。\n请改用 --merge run 先跑一次三源合并。"
@@ -115,18 +126,26 @@ def load_unified_master(cfg: dict, mode: str, allow_stale: bool, logger) -> tupl
                 "  1) --merge run              重新跑三源合并\n"
                 "  2) --merge reuse --allow-stale-master   明确确认就要用这份旧宽表"
             )
-    else:
+    elif mode != "run":
         raise StopWithMessage(f"未知的 --merge 取值：{mode}（只能是 run 或 reuse）")
 
     if not path.exists():
         raise StopWithMessage(f"三源合并结束但没有生成宽表：{path}")
 
     logger.info("读取宽表 %s", path)
-    df = pd.read_csv(path, dtype={c: "string" for c in TEXT_COLS}, low_memory=False)
+    if path.suffix.lower() == ".parquet":
+        df = pd.read_parquet(path)
+        for col in TEXT_COLS:
+            if col in df.columns:
+                df[col] = df[col].astype("string")
+    else:
+        df = pd.read_csv(path, dtype={c: "string" for c in TEXT_COLS}, low_memory=False)
     for col in DT_COLS:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
-    df["TNO"] = df["TNO"].map(lambda v: clean_text(v))
+    tno = df["TNO"].astype("string").str.strip()
+    tno = tno.where(~tno.str.lower().isin({"", "nan", "none", "<na>", "nat", "null"}), pd.NA)
+    df["TNO"] = tno.astype("object").where(tno.notna(), None)
     before = len(df)
     df = df[df["TNO"].notna()].copy()
     if len(df) != before:

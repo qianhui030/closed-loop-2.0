@@ -392,14 +392,32 @@ def _is_pivot_sheet(name: str) -> bool:
     return _norm_sheet(text).endswith("pv")
 
 
+def read_excel_fast(path: Path, **kwargs) -> pd.DataFrame:
+    """Prefer python-calamine (Rust) for 10x+ faster Excel reading; fall back to openpyxl."""
+    try:
+        return pd.read_excel(path, engine="calamine", **kwargs)
+    except Exception:
+        return pd.read_excel(path, engine="openpyxl", **kwargs)
+
+
 def read_sheet_headers(path: Path) -> dict[str, list[str]]:
-    wb = load_workbook(path, read_only=True, data_only=True)
-    headers = {}
-    for name in wb.sheetnames:
-        row = next(wb[name].iter_rows(max_row=1, values_only=True), ())
-        headers[name] = [str(c).strip() for c in row if c is not None and str(c).strip()]
-    wb.close()
-    return headers
+    try:
+        from python_calamine import CalamineWorkbook
+        wb = CalamineWorkbook.from_path(str(path))
+        headers = {}
+        for name in wb.sheet_names:
+            rows = wb.get_sheet_by_name(name).to_python(skip_empty_area=False)
+            row = rows[0] if rows else ()
+            headers[name] = [str(c).strip() for c in row if c is not None and str(c).strip()]
+        return headers
+    except Exception:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        headers = {}
+        for name in wb.sheetnames:
+            row = next(wb[name].iter_rows(max_row=1, values_only=True), ())
+            headers[name] = [str(c).strip() for c in row if c is not None and str(c).strip()]
+        wb.close()
+        return headers
 
 
 def looks_like_parcel_detail(headers: list[str]) -> bool:
@@ -552,14 +570,8 @@ def classify_csv(path: Path) -> str | None:
 def classify_workbook(path: Path) -> str | None:
     if path.suffix.lower() == ".csv":
         return classify_csv(path)
-    wb = load_workbook(path, read_only=True, data_only=True)
-    sheets = wb.sheetnames
-    first_headers = {}
-    for name in sheets:
-        ws = wb[name]
-        row = next(ws.iter_rows(max_row=1, values_only=True), ())
-        first_headers[name] = [c for c in row if c]
-    wb.close()
+    first_headers = read_sheet_headers(path)
+    sheets = list(first_headers)
     if "Tracking Details" in sheets and "MAWB Details" in sheets:
         return "AGS"
     cols = set()
@@ -617,8 +629,8 @@ def empty_std() -> pd.DataFrame:
 
 def process_ags(path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     print("  AGS Tracking Details", flush=True)
-    tracking = pd.read_excel(path, sheet_name="Tracking Details", engine="openpyxl")
-    mawb = pd.read_excel(path, sheet_name="MAWB Details", engine="openpyxl")
+    tracking = read_excel_fast(path, sheet_name="Tracking Details")
+    mawb = read_excel_fast(path, sheet_name="MAWB Details")
     invalid = tracking.loc[is_blank_series(clean_tn_series(tracking["tracking_number"]))].copy()
     tracking["TNO"] = clean_tn_series(tracking["tracking_number"])
     tracking = tracking[tracking["TNO"].notna()].copy()
@@ -694,7 +706,7 @@ def process_system(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     if path.suffix.lower() == ".csv":
         df = pd.read_csv(path, dtype=object, low_memory=False)
     else:
-        df = pd.read_excel(path, sheet_name=0, engine="openpyxl")
+        df = read_excel_fast(path, sheet_name=0)
     df["TNO"] = clean_tn_series(df["tracking_number"])
     invalid = df[df["TNO"].isna()].copy()
     df = df[df["TNO"].notna()].copy()
@@ -750,11 +762,10 @@ def process_system(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _sheet_tracking_numbers(path: Path, sheet: str) -> set[str]:
-    df = pd.read_excel(
+    df = read_excel_fast(
         path,
         sheet_name=sheet,
         usecols=lambda c: _norm_col(c) in TRACKING_HEADER_NAMES,
-        engine="openpyxl",
     )
     if df.shape[1] == 0:
         return set()
@@ -886,7 +897,7 @@ def process_platform(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         if actual is None:
             print(f"    {spec['sheet_key']}: 业务缺席，本工作簿无对应明细表", flush=True)
             continue
-        df = pd.read_excel(path, sheet_name=actual, engine="openpyxl")
+        df = read_excel_fast(path, sheet_name=actual)
         try:
             tn_col = resolve_col(df, *spec["tn"])
             hub_col = resolve_col(df, *spec["hub"])
@@ -1464,8 +1475,8 @@ def output_path_or_fallback(path: Path) -> Path:
         return alt
 
 
-def write_display_files(display_dt: pd.DataFrame, biz_day: str):
-    """Write the 18-column operational master as dated xlsx / csv / parquet."""
+def write_display_files(display_dt: pd.DataFrame, biz_day: str, full_excel: bool = False):
+    """Write the 18-column operational master as dated parquet (plus csv/xlsx on --full-excel)."""
     OUT_DIR.mkdir(exist_ok=True)
     stamp = biz_day or datetime.now().strftime("%Y-%m-%d")
     display = display_dt[DISPLAY_COLS].copy()
@@ -1477,15 +1488,18 @@ def write_display_files(display_dt: pd.DataFrame, biz_day: str):
     pq_path = output_path_or_fallback(OUT_DIR / f"unified_master_{stamp}.parquet")
     xlsx_path = output_path_or_fallback(OUT_DIR / f"unified_master_{stamp}.xlsx")
 
+    print("  write Parquet", pq_path.name, flush=True)
+    display.to_parquet(pq_path, index=False)
+
+    if not full_excel:
+        return xlsx_path, csv_path, pq_path
+
     print("  write dated CSV", csv_path.name, flush=True)
     display_str = display.copy()
     for col in DATETIME_COLS:
         if col in display_str.columns:
             display_str[col] = fmt_dt(display[col])
     display_str.to_csv(csv_path, index=False, encoding="utf-8-sig")
-
-    print("  write Parquet", pq_path.name, flush=True)
-    display.to_parquet(pq_path, index=False)
 
     print("  write Excel", xlsx_path.name, flush=True)
     with pd.ExcelWriter(
@@ -1552,7 +1566,8 @@ def write_inter_hub_detail(
 
 
 def write_outputs(master: pd.DataFrame, audit: pd.DataFrame, mawb_conflicts: pd.DataFrame,
-                  invalid: pd.DataFrame, files: dict, hub_summary: pd.DataFrame | None = None):
+                  invalid: pd.DataFrame, files: dict, hub_summary: pd.DataFrame | None = None,
+                  full_excel: bool = False):
     OUT_DIR.mkdir(exist_ok=True)
     master = add_ascan_due(master)
     if "CUSTOMER" not in master.columns and "Customer" in master.columns:
@@ -1577,31 +1592,42 @@ def write_outputs(master: pd.DataFrame, audit: pd.DataFrame, mawb_conflicts: pd.
     off = master[master["cohort_date"].notna() & (master["cohort_date"] != biz_day)].copy() if biz_day else master.iloc[0:0]
 
     display = master[DISPLAY_COLS].copy()
-    write_display_files(display, biz_day)
+    write_display_files(display, biz_day, full_excel=full_excel)
     write_inter_hub_detail(master, biz_day, hub_summary)
 
     wide_keep = [c for c in FULL_COLS if c in master.columns]
-    wide = master[wide_keep].copy()
+    wide_pq = master[wide_keep].copy()
     for col in DATETIME_COLS:
-        if col in wide.columns:
-            wide[col] = fmt_dt(wide[col])
-    wide.to_csv(output_path_or_fallback(OUT_DIR / "unified_master.csv"), index=False, encoding="utf-8-sig")
+        if col in wide_pq.columns:
+            wide_pq[col] = parse_dt_series(wide_pq[col])
+    wide_pq.to_parquet(output_path_or_fallback(OUT_DIR / "unified_master.parquet"), index=False)
+
+    if full_excel:
+        wide = wide_pq.copy()
+        for col in DATETIME_COLS:
+            if col in wide.columns:
+                wide[col] = fmt_dt(wide[col])
+        wide.to_csv(output_path_or_fallback(OUT_DIR / "unified_master.csv"), index=False, encoding="utf-8-sig")
 
     # keep audit / off-day / invalid as supporting files
     audit_csv = OUT_DIR / "conflict_audit.csv"
     off_csv = OUT_DIR / "off_day_records.csv"
     inv_csv = OUT_DIR / "invalid_no_tn.csv"
     audit.to_csv(audit_csv, index=False, encoding="utf-8-sig")
-    off_disp = off[DISPLAY_COLS].copy() if len(off) else pd.DataFrame(columns=DISPLAY_COLS)
-    for col in DATETIME_COLS:
-        if col in off_disp.columns:
-            off_disp[col] = fmt_dt(off_disp[col])
-    off_disp.to_csv(off_csv, index=False, encoding="utf-8-sig")
-    off_disp.to_csv(OUT_DIR / "out_of_cohort_records.csv", index=False, encoding="utf-8-sig")
+    if full_excel:
+        off_disp = off[DISPLAY_COLS].copy() if len(off) else pd.DataFrame(columns=DISPLAY_COLS)
+        for col in DATETIME_COLS:
+            if col in off_disp.columns:
+                off_disp[col] = fmt_dt(off_disp[col])
+        off_disp.to_csv(off_csv, index=False, encoding="utf-8-sig")
+        off_disp.to_csv(OUT_DIR / "out_of_cohort_records.csv", index=False, encoding="utf-8-sig")
     if invalid is None or invalid.empty:
         pd.DataFrame(columns=["TNO", "note"]).to_csv(inv_csv, index=False, encoding="utf-8-sig")
     else:
         invalid.to_csv(inv_csv, index=False, encoding="utf-8-sig")
+
+    if not full_excel:
+        return biz_day, master, audit, off
 
     print("  write Excel sample", flush=True)
     rng = np.random.default_rng(24)
@@ -2089,6 +2115,7 @@ def main():
     if "--from-csv" in sys.argv:
         export_from_merged_csv()
         return
+    full_excel = "--full-excel" in sys.argv
     print("discover files", flush=True)
     files = find_input_files()
     print(files, flush=True)
@@ -2119,7 +2146,7 @@ def main():
     master, audit = merge_sources(ags, sys_df, plt)
     master = attach_ags_inter_hub(master, ags)
     biz_day, master_out, audit_out, off = write_outputs(
-        master, audit, mawb_c, invalid, files, hub_summary,
+        master, audit, mawb_c, invalid, files, hub_summary, full_excel=full_excel,
     )
     qpath = quality_report(master_out, audit_out, off, files, biz_day, len(ags), len(sys_df), len(plt))
     verify_tno_coverage(master_out, ags, sys_df, plt)

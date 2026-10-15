@@ -71,10 +71,17 @@ def _read_table(path: Path, cfg: dict) -> pd.DataFrame:
     aliases = cfg["columns"]
     scan = int(cfg.get("header_scan_rows", 6))
     if path.suffix.lower() in {".xlsx", ".xlsm"}:
-        wb = load_workbook(path, read_only=True, data_only=True)
-        ws = wb[wb.sheetnames[0]]
-        rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        wb.close()
+        try:
+            from python_calamine import CalamineWorkbook
+            cwb = CalamineWorkbook.from_path(str(path))
+            rows = [
+                list(r) for r in cwb.get_sheet_by_index(0).to_python(skip_empty_area=False)
+            ]
+        except Exception:
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = wb[wb.sheetnames[0]]
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+            wb.close()
     else:
         last_error = None
         rows = None

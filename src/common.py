@@ -27,8 +27,6 @@ DIRS = {
     "step1_output": ROOT / "Step1_Output",
     "status_input": ROOT / "Status_Check" / "Input",
     "final_output": ROOT / "Final_Output",
-    "mawb_log": ROOT / "MAWB_Log",
-    "mawb_log_backups": ROOT / "MAWB_Log" / "Backups",
     "archive": ROOT / "Archive",
     "logs": ROOT / "Logs",
     "working": ROOT / "Working",
@@ -277,7 +275,7 @@ def atomic_write_csv(path: Path, frame: pd.DataFrame) -> None:
 
 
 def write_stream_sheet(book, sheet_name: str, frame: pd.DataFrame, head_fmt=None,
-                       chunk: int = 50000):
+                       chunk: int = 100000):
     """Row-major streaming write for xlsxwriter constant_memory sheets.
 
     pandas `to_excel` emits cells column by column, which constant_memory silently
@@ -290,24 +288,26 @@ def write_stream_sheet(book, sheet_name: str, frame: pd.DataFrame, head_fmt=None
         ws.set_column(idx, idx, min(max(len(str(col)) + 4, 12), 40))
     ws.freeze_panes(1, 0)
     ws.autofilter(0, 0, max(len(frame), 1), max(len(cols) - 1, 0))
+    if frame.empty:
+        return ws
 
-    row_no = 1
-    for start in range(0, max(len(frame), 1), chunk):
-        part = frame.iloc[start:start + chunk]
-        if part.empty:
-            break
-        prepared = part.copy()
-        for col in cols:
-            series = prepared[col]
-            if pd.api.types.is_datetime64_any_dtype(series):
-                prepared[col] = series.dt.strftime("%Y-%m-%d %H:%M:%S").astype(object)
-            elif str(series.dtype) in {"boolean", "string"}:
-                prepared[col] = series.astype(object)
-        prepared = prepared.astype(object)
-        prepared = prepared.where(pd.notna(prepared), None)
-        for values in prepared.itertuples(index=False, name=None):
-            ws.write_row(row_no, 0, values)
-            row_no += 1
+    col_arrays = []
+    for col in cols:
+        series = frame[col]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            formatted = series.dt.strftime("%Y-%m-%d %H:%M:%S")
+            arr = formatted.astype(object).where(series.notna(), None).to_numpy()
+        else:
+            arr = series.astype(object).where(series.notna(), None).to_numpy()
+        col_arrays.append(arr)
+
+    write_row = ws.write_row
+    n = len(frame)
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        slices = [arr[start:end] for arr in col_arrays]
+        for row_offset, values in enumerate(zip(*slices), start=start + 1):
+            write_row(row_offset, 0, values)
     return ws
 
 

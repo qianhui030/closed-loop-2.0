@@ -432,6 +432,8 @@ def main(argv=None) -> int:
                         help="明确确认使用超过时效阈值的旧宽表")
     parser.add_argument("--receiving-date", default=None,
                         help="收货文件内没有日期列时，显式提供收货日期 YYYY-MM-DD")
+    parser.add_argument("--full-excel", action="store_true",
+                        help="额外写出 Unified_Master_Step1.xlsx 和全量 Working CSV（日常无需开启）")
     args = parser.parse_args(argv)
 
     try:
@@ -512,7 +514,6 @@ def main(argv=None) -> int:
         # ---- outputs
         logger.info("写 Working 中间数据")
         step1.to_parquet(work / "unified_master_step1.parquet", index=False)
-        atomic_write_csv(work / "pool_waiting_not_due.csv", waiting)
         held = history[history["match_eligible"] != "Yes"] if len(history) else history
         for name, frame in (
             ("receiving_standardized.csv", std),
@@ -520,16 +521,19 @@ def main(argv=None) -> int:
             ("receiving_not_matchable.csv", held),
             ("already_counted_receiving_conflict.csv", already_counted),
             ("pool_overdue_not_counted.csv", overdue),
-            ("pool_not_pulled.csv", pool_held),
         ):
             atomic_write_csv(work / name, frame)
+        if args.full_excel or bool(cfg.get("step1", {}).get("write_working_pool_csv", False)):
+            atomic_write_csv(work / "pool_waiting_not_due.csv", waiting)
+            atomic_write_csv(work / "pool_not_pulled.csv", pool_held)
 
         query = step1[step1["query_reason"].notna()].drop_duplicates("TNO")
 
         logger.info("写 Step1 输出（主表 %d 行 / Status Check 清单 %d 行）", len(step1), len(query))
         font = cfg["report"].get("font_name")
-        write_workbook(out_dir / "Unified_Master_Step1.xlsx",
-                       {"Unified_Master_Step1": step1}, font=font)
+        if args.full_excel or bool(cfg.get("step1", {}).get("write_excel", False)):
+            write_workbook(out_dir / "Unified_Master_Step1.xlsx",
+                           {"Unified_Master_Step1": step1}, font=font)
         list_path = out_dir / "Status_Check_List.xlsx"
         write_status_check_list(list_path, query["TNO"], font=font)
         logger.info("Status Check 单号清单（仅 Tracking Number）：%s",

@@ -215,10 +215,6 @@ def main() -> int:
     from test_system_hub import run_checks as run_hub_checks
     for ok, label in run_hub_checks():
         check(ok, label)
-    print("== MAWB 汇总客户名用 CUSTOMER ==")
-    from test_mawb_customer import run_checks as run_mawb_customer_checks
-    for ok, label in run_mawb_customer_checks():
-        check(ok, label)
 
     global SANDBOX
     if SANDBOX.exists():
@@ -273,36 +269,10 @@ def main() -> int:
     report = SANDBOX / "Final_Output" / "2026-09-02" / m1["run_id"] / "Ascan_KPI.xlsx"
     check(report.exists(), "D1 生成 Ascan_KPI.xlsx")
     book = pd.read_excel(report, sheet_name=None, dtype={"TNO": str})
-    check(all(s in book for s in ("Updated Unified Master", "MAWB 汇总", "Hub Pivot",
+    check(all(s in book for s in ("Updated Unified Master", "Hub Pivot",
                                   "Customer Pivot", "On Time Rate")),
-          "报表含 Updated Unified Master、MAWB 汇总与三个 Pivot 工作表")
-    check("MAWB Pivot" not in book, "报表不再包含 MAWB Pivot")
-    mawb_sum = book["MAWB 汇总"]
-    check(list(mawb_sum.columns[:6]) == ["Hub", "CUSTOMER", "MAWB", "Source", "跨Hub转运", "start_time"],
-          f"MAWB 汇总列为 Hub / CUSTOMER / MAWB / Source / 跨Hub转运 / start_time（实际 {list(mawb_sum.columns)}）")
-    check("Completion percentage" in mawb_sum.columns and "Sum of completed_count" in mawb_sum.columns,
-          f"MAWB 汇总含完成件数与 Completion percentage（实际 {list(mawb_sum.columns)}）")
-    mawb_row = mawb_sum.iloc[0]
-    check(int(mawb_row["Count of TNO"]) >= int(mawb_row["Sum of completed_count"]),
-          "完成件数不超过该 MAWB 全部件数")
-    check(0 <= float(mawb_row["Completion percentage"]) <= 1,
-          f"Completion percentage 在 0–1（实际 {mawb_row['Completion percentage']}）")
-    check(not mawb_sum.duplicated(["Hub", "MAWB"]).any(),
-          "当天 MAWB 汇总同一 Hub 下 MAWB 不重复")
-    check(set(mawb_sum["MAWB"].astype(str)) == {"111-11111111"},
-          f"D1 有 MAWB 的考核提单只有 111-11111111（实际 {list(mawb_sum['MAWB'])}）")
-    src = str(mawb_sum.iloc[0]["Source"]).strip()
-    check(src and src not in {"nan", "<NA>", "None"},
-          f"MAWB 汇总按 MAWB 带 Source（实际 {src!r}）")
-    check(str(mawb_sum.iloc[0]["跨Hub转运"]) == "LAX-DFW",
-          f"跨 Hub 的 MAWB 在汇总表打标 LAX-DFW（实际 {mawb_sum.iloc[0]['跨Hub转运']!r}）")
-    hist1 = pd.read_excel(SANDBOX / "MAWB_Log" / "MAWB_History.xlsx", dtype={"MAWB": str})
-    check(list(hist1.columns) == ["Source", "kpi_date", "Hub", "MAWB", "start_time"],
-          f"累计表列为 Source / kpi_date / Hub / MAWB / start_time（实际 {list(hist1.columns)}）")
-    check(len(hist1) == 1 and hist1["MAWB"].iloc[0] == "111-11111111",
-          f"D1 累计表写入 1 条 MAWB（实际 {hist1.to_dict('records')}）")
-    check(str(hist1["kpi_date"].iloc[0])[:10] == "2026-09-02",
-          f"累计表 KPI 日期为当天（实际 {hist1['kpi_date'].iloc[0]}）")
+          "报表含 Updated Unified Master 与三个 Pivot 工作表")
+    check("MAWB Pivot" not in book and "MAWB 汇总" not in book, "报表不再包含 MAWB 表")
     upd = book["Updated Unified Master"]
     check(len(upd) == 8 and upd["TNO"].nunique() == 8, "主表保留本次到期 8 个 TNO（含不可计入）")
     elig_upd = upd[upd["kpi_eligible"].astype(str).isin(["True", "TRUE"])]
@@ -408,9 +378,8 @@ def main() -> int:
           "T010 从 Pool 带出原 A-scan")
     check("T005" not in set(step1["TNO"].astype(str)),
           "已计入且未出现在当天收货 Log 的 Pool 记录不整池并入主表")
-    held_pool = pd.read_csv(SANDBOX / "Working" / m2["run_id"] / "pool_not_pulled.csv", dtype={"TNO": str})
-    check("T005" in set(held_pool["TNO"].astype(str)),
-          "未捞出的 Pool 记录写入 pool_not_pulled.csv")
+    check("T005" in set(pool_d2["TNO"].astype(str)),
+          "未捞出的 Pool 记录仍保留在 Active_Pool")
     t009 = step1[step1["TNO"] == "T009"].iloc[0]
     check(pd.isna(t009["receiving_time"]) or str(t009["receiving_time"]) in {"", "NaT", "None"},
           f"分批收货未擅自取第一笔或最后一笔（T009 receiving_time={t009['receiving_time']}）")
@@ -479,17 +448,6 @@ def main() -> int:
     check(st2.get("T010") == "On Time",
           f"T010 未到期已有 A-scan，到期日计入 On Time（实际 {st2.get('T010')}）")
 
-    hist2 = pd.read_excel(SANDBOX / "MAWB_Log" / "MAWB_History.xlsx", dtype={"MAWB": str})
-    check(hist2["MAWB"].astype(str).nunique() == len(hist2), "累计表跨天 MAWB 仍不重复")
-    mawbs2 = set(hist2["MAWB"].astype(str))
-    check("111-11111111" in mawbs2 and "333-33333333" in mawbs2,
-          f"D2 累计表保留 D1 的 MAWB 并追加当天新 MAWB（实际 {sorted(mawbs2)}）")
-    first = hist2[hist2["MAWB"].astype(str) == "111-11111111"].iloc[0]
-    check(str(first["kpi_date"])[:10] == "2026-09-02",
-          f"已有 MAWB 保留首次 KPI 日期（实际 {first['kpi_date']}）")
-    n_111 = int((hist2["MAWB"].astype(str) == "111-11111111").sum())
-    check(n_111 == 1, f"111-11111111 在累计表只出现一次（实际 {n_111}）")
-
     print("\n== 重跑幂等 ==")
     proc = run("stage2.py", "--run-id", m2["run_id"])
     check(proc.returncode != 0 and "不是待处理" in (proc.stdout + proc.stderr),
@@ -536,7 +494,7 @@ def main() -> int:
     check(abs(overall - elig_src["onTime_count"].sum() / len(elig_src)) < 1e-9,
           f"总率按包裹数加权 = {overall:.4f}")
     print(f"     各 Hub 百分比简单平均 = {hub_rate:.4f}（与加权总率不同属正常，报表用加权）")
-    check(d2_mia.exists(), "D2 生成 Ascan_KPI_MIA.xlsx")
+    check(not d2_mia.exists(), "D2 默认不再生成 Ascan_KPI_MIA.xlsx")
     try:
         import win32com.client as client
 

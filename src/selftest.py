@@ -95,6 +95,9 @@ DAY1 = [
     # Same MAWB received twice on D2; must NOT pick first or last time.
     row("T009", "System", "Demo Shipper", "Demo Shipper", "DFW", "777-77777777",
         "2026-09-01 10:00:00", None, 48, None, has_system="Yes"),
+    # ProCarrier row: physically removed in Step 1, audited in 删除说明 / 本次删除
+    row("T099", "System", "ProCarrier", "ProCarrier", "DFW", None,
+        "2026-09-01 10:00:00", None, 24, None, has_system="Yes"),
     # 48h SLA with A-scan already in: must stay in the pool until 09-03 KPI
     row("T010", "System", "Demo Shipper", "Demo Shipper", "DFW", None,
         "2026-09-01 10:00:00", "2026-09-01 12:00:00", 48, None, has_system="Yes"),
@@ -269,10 +272,21 @@ def main() -> int:
     report = SANDBOX / "Final_Output" / "2026-09-02" / m1["run_id"] / "Ascan_KPI.xlsx"
     check(report.exists(), "D1 生成 Ascan_KPI.xlsx")
     book = pd.read_excel(report, sheet_name=None, dtype={"TNO": str})
-    check(all(s in book for s in ("Updated Unified Master", "Hub Pivot",
-                                  "Customer Pivot", "On Time Rate")),
-          "报表含 Updated Unified Master 与三个 Pivot 工作表")
+    check(all(s in book for s in ("Updated Unified Master", "删除说明", "本次删除",
+                                  "Hub Pivot", "Customer Pivot", "On Time Rate")),
+          "报表含 Updated Unified Master、删除说明、本次删除与三个 Pivot 工作表")
     check("MAWB Pivot" not in book and "MAWB 汇总" not in book, "报表不再包含 MAWB 表")
+    rem_detail = book["本次删除"]
+    check("T099" in set(rem_detail["TNO"].astype(str)),
+          "ProCarrier T099 已物理删除并记录在 本次删除 页签")
+    proc_reb = run("stage2.py", "--run-id", m1["run_id"], "--rebuild-report")
+    check(proc_reb.returncode == 0, "D1 --rebuild-report 重出报表成功")
+    book_reb = pd.read_excel(report, sheet_name=None, dtype={"TNO": str})
+    check("T099" in set(book_reb["本次删除"]["TNO"].astype(str)),
+          "--rebuild-report 重出报表保留历史已删除明细 T099")
+    rem_sum_reb = dict(zip(book_reb["删除说明"]["项目"], book_reb["删除说明"]["条数"]))
+    check(int(rem_sum_reb.get("ProCarrier", 0)) == 1 and int(rem_sum_reb.get("合计删除", 0)) == 1,
+          f"--rebuild-report 删除说明统计准确（ProCarrier={rem_sum_reb.get('ProCarrier')}）")
     upd = book["Updated Unified Master"]
     check(len(upd) == 8 and upd["TNO"].nunique() == 8, "主表保留本次到期 8 个 TNO（含不可计入）")
     elig_upd = upd[upd["kpi_eligible"].astype(str).isin(["True", "TRUE"])]

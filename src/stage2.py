@@ -458,9 +458,41 @@ def rebuild_completed_report(args, cfg: dict, sc_cfg: dict, logger, run_id2: str
             updated.get("kpi_status", updated.get("status"))
         )
 
+    saved_removed = work / "removed_rows.parquet"
+    if saved_removed.exists():
+        removed_prev = pd.read_parquet(saved_removed)
+        logger.info("加载历史已删除记录 %d 条", len(removed_prev))
+    else:
+        removed_prev = pd.DataFrame(columns=["删除原因"])
+    updated, removed_now = kpi_rules.split_removed_rows(updated)
+    if len(removed_now):
+        removed_now["删除范围"] = "本次到期"
+        logger.info("重出报表新增命中删除规则 %d 条", len(removed_now))
+    if len(removed_prev) and len(removed_now):
+        removed = pd.concat([removed_prev, removed_now], ignore_index=True)
+        if "TNO" in removed.columns:
+            removed = removed.drop_duplicates("TNO", keep="last")
+        removed.to_parquet(saved_removed, index=False)
+    elif len(removed_now):
+        removed = removed_now
+        removed.to_parquet(saved_removed, index=False)
+    else:
+        removed = removed_prev
+
     eligible, report, counts, rate = publish_kpi_frames(updated, sc_cfg, logger)
     if eligible.empty:
         raise StopWithMessage(f"本次 KPI 范围为空（kpi_date={kpi_date}）。")
+
+    removed_due = (
+        removed.loc[removed["删除范围"].eq("本次到期")]
+        if len(removed) and "删除范围" in removed.columns
+        else removed
+    )
+    before_rows = len(report) + int(len(removed_due))
+    removed_summary = kpi_rules.removal_summary(
+        removed_due, before_rows, len(report), len(eligible)
+    )
+    removed_detail = kpi_rules.removal_detail(removed)
 
     outside = pd.DataFrame()
     outside_path = DIRS["final_output"] / kpi_date / args.run_id / "status_check_outside_batch.csv"
@@ -480,7 +512,10 @@ def rebuild_completed_report(args, cfg: dict, sc_cfg: dict, logger, run_id2: str
 
     out_dir = DIRS["final_output"] / kpi_date / args.run_id
     report_path = out_dir / "Ascan_KPI.xlsx"
-    sheets = report_sheets(report, exceptions, outside, eligible, kpi_date, cfg)
+    sheets = report_sheets(
+        report, exceptions, outside, eligible, kpi_date, cfg,
+        removed_summary, removed_detail,
+    )
     report_path = pivots.build_workbook(report_path, sheets, cfg, logger)
     mia_path = None
     if bool(cfg.get("report", {}).get("write_mia_report", False)):

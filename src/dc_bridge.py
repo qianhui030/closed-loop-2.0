@@ -39,12 +39,14 @@ def merge_module():
 
 def wide_csv_path(cfg: dict) -> Path:
     section = cfg["unified_master"]
-    return DIRS["data_combination"] / section["wide_csv"]
+    return DIRS["data_combination"] / section.get("wide_csv", "output/unified_master.csv")
 
 
 def wide_parquet_path(cfg: dict) -> Path:
-    csv_path = wide_csv_path(cfg)
-    return csv_path.with_suffix(".parquet")
+    section = cfg["unified_master"]
+    if section.get("wide_parquet"):
+        return DIRS["data_combination"] / section["wide_parquet"]
+    return wide_csv_path(cfg).with_suffix(".parquet")
 
 
 def run_merge(cfg: dict, logger) -> str:

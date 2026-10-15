@@ -5,6 +5,7 @@ unified_master:
   # Data Combination 仍是三源合并的唯一实现，本项目只消费它的宽表输出。
   merge_dir: "Data Combination"
   merge_entry: "build_unified_master.py"
+  wide_parquet: "output/unified_master.parquet"
   wide_csv: "output/unified_master.csv"
   # 复用已有宽表时，超过这个分钟数就必须显式确认，避免静默读上次遗留输出。
   reuse_max_age_minutes: 180
